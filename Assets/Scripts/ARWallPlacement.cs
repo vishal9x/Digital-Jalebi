@@ -185,7 +185,6 @@ public class ARWallPlacement : MonoBehaviour
             }
             else
             {
-                // Fallback if anchor creation fails on current provider/runtime.
                 placedAnchor = null;
                 placedWallInstance = Instantiate(wallPrefab, targetPosition, targetRotation);
             }
@@ -195,6 +194,11 @@ public class ARWallPlacement : MonoBehaviour
             placedAnchor = null;
             placedWallInstance = Instantiate(wallPrefab, targetPosition, targetRotation);
         }
+
+        // Start video playback on placed wall
+        VideoPlayerController vpc = placedWallInstance.GetComponentInChildren<VideoPlayerController>();
+        if (vpc != null)
+            vpc.Play();
 
         if (quadPreview != null)
             quadPreview.SetActive(false);
