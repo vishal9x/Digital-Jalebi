@@ -14,6 +14,7 @@ GameObject:
   - component: {fileID: 4279735679714324588}
   - component: {fileID: 1540549057593492604}
   - component: {fileID: 4603557607565826161}
+  - component: {fileID: 8253551507450260540}
   m_Layer: 0
   m_Name: WallVideo
   m_TagString: Untagged
@@ -156,6 +157,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f5153fd421dcc2d4987ecc2508dbbce6, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  addressableVideo:
+    m_AssetGUID: e0f8a600d5b01274fb9802fb076e684c
+    m_SubObjectName: 
+    m_SubObjectType: 
+    m_EditorAssetChanged: 0
   videoClip: {fileID: 0}
   streamingAssetsFileName: Tab 2 3-2 Earthquake.webm
   videoURL: 
@@ -163,6 +169,23 @@ MonoBehaviour:
   renderTextureHeight: 1080
   targetRenderer: {fileID: 0}
   materialTextureName: _MainTex
+  physicalHeight: 1
   loop: 1
   muteAudio: 0
   volume: 1
+--- !u!114 &8253551507450260540
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 7830587060717893999}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 4ede0662a9a2ce54d96d2830d6a2c068, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  minScale: 0.3
+  maxScale: 3
+  allowRotation: 1
+  rotationSensitivity: 1
