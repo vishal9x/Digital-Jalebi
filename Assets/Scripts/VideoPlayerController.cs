@@ -1,6 +1,8 @@
 using UnityEngine;
 using UnityEngine.Video;
 using System.Collections;
+using UnityEngine.AddressableAssets;
+using UnityEngine.ResourceManagement.AsyncOperations;
 
 /// <summary>
 /// Manages VideoPlayer + RenderTexture pipeline for transparent AR wall video.
@@ -9,7 +11,11 @@ using System.Collections;
 [RequireComponent(typeof(VideoPlayer))]
 public class VideoPlayerController : MonoBehaviour
 {
-    [Header("Video Source — assign ONE")]
+    [Header("Addressables (Remote — video NOT bundled in app)")]
+    [Tooltip("Assign your Addressable VideoClip asset reference here. The video is downloaded at runtime from the remote bundle and takes priority over all other sources.")]
+    public AssetReferenceT<VideoClip> addressableVideo;
+
+    [Header("Video Source — fallback for Editor / local testing")]
     public VideoClip videoClip;
     [Tooltip("Filename inside StreamingAssets folder, e.g. myvideo.webm (recommended for Android)")]
     public string streamingAssetsFileName;
@@ -27,6 +33,10 @@ public class VideoPlayerController : MonoBehaviour
     [Tooltip("Shader property name for the video texture.")]
     public string materialTextureName = "_MainTex";
 
+    [Header("Physical Size")]
+    [Tooltip("Desired display height in world-space meters. Width is calculated automatically from the video aspect ratio.")]
+    public float physicalHeight = 1.0f;
+
     [Header("Playback")]
     public bool loop = true;
     public bool muteAudio = false;
@@ -36,6 +46,8 @@ public class VideoPlayerController : MonoBehaviour
     RenderTexture _renderTexture;
     bool _prepared = false;
     bool _preparing = false;
+    AsyncOperationHandle<VideoClip> _addressableHandle;
+    bool _handleValid = false;
 
     void Awake()
     {
@@ -83,8 +95,13 @@ public class VideoPlayerController : MonoBehaviour
         audioSrc.playOnAwake = false;
         audioSrc.volume = muteAudio ? 0f : volume;
 
-        // Source — priority: VideoClip > StreamingAssets filename > raw URL
-        if (videoClip != null)
+        // Source — priority: Addressable (remote) > VideoClip > StreamingAssets > raw URL
+        // Addressable source is assigned asynchronously in LoadAddressableAndPlay(); skip here.
+        if (addressableVideo != null && addressableVideo.RuntimeKeyIsValid())
+        {
+            Debug.Log("[VPC] Addressable video configured — source will be assigned after async download.");
+        }
+        else if (videoClip != null)
         {
             _videoPlayer.source = VideoSource.VideoClip;
             _videoPlayer.clip = videoClip;
@@ -105,7 +122,7 @@ public class VideoPlayerController : MonoBehaviour
         }
         else
         {
-            Debug.LogWarning("[VideoPlayerController] No VideoClip, StreamingAssets filename, or URL assigned.", this);
+            Debug.LogWarning("[VideoPlayerController] No video source assigned. Set Addressable, VideoClip, StreamingAssets filename, or URL.", this);
             return;
         }
 
@@ -137,7 +154,10 @@ public class VideoPlayerController : MonoBehaviour
     void OnEnable()
     {
         // Auto-play when the wall prefab becomes active (placed in AR scene)
-        StartCoroutine(PrepareAndPlay());
+        if (addressableVideo != null && addressableVideo.RuntimeKeyIsValid())
+            StartCoroutine(LoadAddressableAndPlay());
+        else
+            StartCoroutine(PrepareAndPlay());
     }
 
     void OnDisable()
@@ -145,6 +165,43 @@ public class VideoPlayerController : MonoBehaviour
         _videoPlayer.Stop();
         _prepared = false;
         _preparing = false;
+        ReleaseAddressableHandle();
+    }
+
+    // Downloads the VideoClip via Addressables (remote bundle), assigns it to the
+    // VideoPlayer, then hands off to the normal PrepareAndPlay() flow.
+    IEnumerator LoadAddressableAndPlay()
+    {
+        Debug.Log($"[VPC] Addressables: starting async load. key={addressableVideo.AssetGUID}");
+
+        _addressableHandle = addressableVideo.LoadAssetAsync<VideoClip>();
+        _handleValid = true;
+
+        // Wait for the download + load to complete
+        yield return _addressableHandle;
+
+        if (_addressableHandle.Status == AsyncOperationStatus.Succeeded)
+        {
+            VideoClip clip = _addressableHandle.Result;
+            _videoPlayer.source = VideoSource.VideoClip;
+            _videoPlayer.clip = clip;
+            Debug.Log($"[VPC] Addressables: loaded '{clip.name}' ({clip.width}x{clip.height}, {clip.frameCount} frames)");
+            yield return StartCoroutine(PrepareAndPlay());
+        }
+        else
+        {
+            Debug.LogError($"[VPC] Addressables: load FAILED — {_addressableHandle.OperationException}", this);
+        }
+    }
+
+    void ReleaseAddressableHandle()
+    {
+        if (_handleValid)
+        {
+            Addressables.Release(_addressableHandle);
+            _handleValid = false;
+            Debug.Log("[VPC] Addressable handle released.");
+        }
     }
 
     IEnumerator PrepareAndPlay()
@@ -212,6 +269,9 @@ public class VideoPlayerController : MonoBehaviour
             }
         }
 
+        // Apply correct aspect ratio scale to the quad
+        ApplyAspectRatioToQuad((int)vp.width, (int)vp.height);
+
         // Confirm shader is correct
         if (targetRenderer != null)
         {
@@ -220,6 +280,21 @@ public class VideoPlayerController : MonoBehaviour
             if (shaderName != "Custom/TransparentVideo")
                 Debug.LogWarning("[VPC] WRONG SHADER! Change material shader to Custom/TransparentVideo in Inspector.");
         }
+    }
+
+    // Sets the quad's localScale so the video fills physicalHeight meters tall
+    // with width proportional to the actual video aspect ratio.
+    void ApplyAspectRatioToQuad(int videoWidth, int videoHeight)
+    {
+        if (targetRenderer == null || videoHeight == 0) return;
+
+        float aspect = (float)videoWidth / videoHeight;
+        float w = physicalHeight * aspect;
+        float h = physicalHeight;
+
+        Transform t = targetRenderer.transform;
+        t.localScale = new Vector3(w, h, t.localScale.z);
+        Debug.Log($"[VPC] Quad scaled to {w:F3}m × {h:F3}m (video {videoWidth}×{videoHeight}, aspect {aspect:F3})");
     }
 
     // --- Public API ---
@@ -237,6 +312,7 @@ public class VideoPlayerController : MonoBehaviour
     void OnDestroy()
     {
         _videoPlayer.prepareCompleted -= OnPrepareCompleted;
+        ReleaseAddressableHandle();
 
         if (_renderTexture != null)
         {
