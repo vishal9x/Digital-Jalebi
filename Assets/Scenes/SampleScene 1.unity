@@ -134,6 +134,7 @@ GameObject:
   - component: {fileID: 91012545}
   - component: {fileID: 91012544}
   - component: {fileID: 91012543}
+  - component: {fileID: 91012547}
   - component: {fileID: 91012542}
   - component: {fileID: 91012541}
   m_Layer: 0
@@ -230,6 +231,20 @@ Transform:
   - {fileID: 725259607}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &91012547
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 91012540}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: d4e5f6789012345678abcdef01234567, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: 
+  maxVerticalNormalY: 0.35
+  minVisibleArea: 0.15
 --- !u!1 &143214884
 GameObject:
   m_ObjectHideFlags: 0
@@ -263,13 +278,18 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   raycastManager: {fileID: 91012542}
   anchorManager: {fileID: 91012541}
+  planeManager: {fileID: 91012543}
   wallPrefab: {fileID: 7830587060717893999, guid: 02e997abebdd786449dabf529249cdda, type: 3}
+  videoSwitcher: {fileID: 143214888}
   quadPreview: {fileID: 4607965080949830792, guid: 865fdfeb649bc324f8a2b59383c737c4, type: 3}
   instructionText: {fileID: 1690293965}
   previewPositionLerp: 12
   previewRotationLerp: 12
   wallOffsetFromPlane: 0.015
   allowReposition: 1
+  placementCooldown: 3
+  minPlaneArea: 0.35
+  maxWallNormalY: 0.35
 --- !u!4 &143214886
 Transform:
   m_ObjectHideFlags: 0
@@ -299,6 +319,8 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   statusText: {fileID: 0}
   continueOnError: 1
+  checkForCatalogUpdates: 1
+  remoteLoadPathTemplate: https://digitaljalebiarworkv.web.app/AssetBundles/[BuildTarget]
 --- !u!114 &143214888
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -314,8 +336,6 @@ MonoBehaviour:
   catalog: {fileID: 11400000, guid: c3d4e5f6789012345678abcdef012345, type: 2}
   wallPlacement: {fileID: 143214885}
   videoNameLabel: {fileID: 0}
-  nextButton: {fileID: 0}
-  previousButton: {fileID: 0}
   waitForAddressablesReady: 1
 --- !u!1 &239093619
 GameObject:

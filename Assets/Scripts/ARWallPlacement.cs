@@ -9,86 +9,117 @@ public class ARWallPlacement : MonoBehaviour
 {
     public ARRaycastManager raycastManager;
     public ARAnchorManager anchorManager;
+    public ARPlaneManager planeManager;
 
     public GameObject wallPrefab;
-    [Tooltip("Optional — syncs video switcher index when wall is placed.")]
     public RemoteVideoSwitcher videoSwitcher;
-
-    // Assign a Quad GameObject in the Inspector to act as placement preview
     public GameObject quadPreview;
-
     public TMP_Text instructionText;
 
+    [Header("Tuning")]
     [SerializeField] float previewPositionLerp = 12f;
     [SerializeField] float previewRotationLerp = 12f;
-    [SerializeField] float wallOffsetFromPlane = 0.015f;
+    [SerializeField] float wallOffsetFromPlane = 0.02f;
     [SerializeField] bool allowReposition = true;
-    [Tooltip("Minimum seconds between placements — stops accidental multi-tap cancelling video download.")]
     [SerializeField] float placementCooldown = 3f;
-    [Tooltip("Minimum detected wall area (m²) before allowing placement.")]
-    [SerializeField] float minPlaneArea = 0.25f;
+    [SerializeField] float minPlaneArea = 0.4f;
+    [SerializeField] float maxWallNormalY = 0.3f;
+    [Tooltip("Reject walls tilted more than this (degrees) from vertical.")]
+    [SerializeField] float maxPlaneTiltDegrees = 20f;
+    [SerializeField] bool hidePlaneMeshesAfterPlace = true;
 
-    List<ARRaycastHit> hits =
-        new List<ARRaycastHit>();
+    readonly List<ARRaycastHit> _hits = new List<ARRaycastHit>();
 
-    bool canPlace = false;
+    bool canPlace;
     Pose lastValidPose;
     ARPlane lastValidPlane;
     GameObject placedWallInstance;
     ARAnchor placedAnchor;
     float _lastPlaceTime = -10f;
+    ARVerticalPlaneFilter _planeFilter;
 
-    /// <summary>Video controller on the currently placed wall, if any.</summary>
     public VideoPlayerController ActiveVideoController { get; private set; }
+
+    void Awake()
+    {
+        if (planeManager == null)
+            planeManager = FindObjectOfType<ARPlaneManager>();
+
+        if (planeManager != null)
+        {
+            planeManager.requestedDetectionMode = PlaneDetectionMode.Vertical;
+            _planeFilter = planeManager.GetComponent<ARVerticalPlaneFilter>();
+            if (_planeFilter == null)
+                _planeFilter = planeManager.gameObject.AddComponent<ARVerticalPlaneFilter>();
+        }
+
+        if (raycastManager == null)
+            raycastManager = FindObjectOfType<ARRaycastManager>();
+    }
 
     void Start()
     {
-        if (instructionText != null)
-        {
-            instructionText.text =
-                "Scan wall and tap";
-        }
-
+        SetInstruction(
+            "Step 1: Stand 1 m from a plain wall\n" +
+            "Step 2: Move phone slowly side to side");
         if (quadPreview != null)
             quadPreview.SetActive(false);
     }
 
     void Update()
     {
-        // Raycast from screen center every frame to show a stable preview on vertical walls.
-        Vector2 screenCenter = new Vector2(Screen.width / 2f, Screen.height / 2f);
+        Vector2 screenCenter = new Vector2(Screen.width * 0.5f, Screen.height * 0.5f);
+        canPlace = TryGetBestVerticalWall(screenCenter, out lastValidPose, out lastValidPlane);
 
-        canPlace = TryGetVerticalPose(screenCenter, out lastValidPose, out lastValidPlane);
-
-        if (canPlace)
+        if (canPlace && quadPreview != null)
         {
-            if (quadPreview != null)
-            {
-                quadPreview.SetActive(true);
+            quadPreview.SetActive(true);
+            float tPos = 1f - Mathf.Exp(-previewPositionLerp * Time.deltaTime);
+            float tRot = 1f - Mathf.Exp(-previewRotationLerp * Time.deltaTime);
+            Pose displayPose = BuildWallPose(lastValidPose.position, lastValidPlane);
 
-                float tPos = 1f - Mathf.Exp(-previewPositionLerp * Time.deltaTime);
-                float tRot = 1f - Mathf.Exp(-previewRotationLerp * Time.deltaTime);
-                Quaternion targetRotation = ComputeWallAlignedRotation(lastValidPose.position, lastValidPlane);
-
-                quadPreview.transform.position = Vector3.Lerp(quadPreview.transform.position, lastValidPose.position, tPos);
-                quadPreview.transform.rotation = Quaternion.Slerp(quadPreview.transform.rotation, targetRotation, tRot);
-            }
-
-            if (instructionText != null)
-                instructionText.text = "Wall detected - tap to place";
+            quadPreview.transform.position = Vector3.Lerp(quadPreview.transform.position, displayPose.position, tPos);
+            quadPreview.transform.rotation = Quaternion.Slerp(quadPreview.transform.rotation, displayPose.rotation, tRot);
+            SetInstruction("Wall detected!\nTap anywhere to place video");
         }
-
-        if (!canPlace)
+        else
         {
             if (quadPreview != null)
                 quadPreview.SetActive(false);
-
-            if (instructionText != null)
-                instructionText.text = "Scan wall and tap";
+            SetInstruction(GetScanHint());
         }
 
         if (TryGetTapPosition(out Vector2 tapPos))
             PlaceWall(tapPos);
+    }
+
+    string GetScanHint()
+    {
+        if (CountTrackedVerticalPlanes() == 0)
+        {
+            return "Scanning wall...\n" +
+                   "• Use a plain wall (not window)\n" +
+                   "• Turn on room lights\n" +
+                   "• Move phone slowly left ↔ right";
+        }
+
+        return "Point phone at the wall\n" +
+               "(middle of the screen)\n" +
+               "Then tap to place";
+    }
+
+    int CountTrackedVerticalPlanes()
+    {
+        if (planeManager == null)
+            return 0;
+
+        int n = 0;
+        foreach (ARPlane plane in planeManager.trackables)
+        {
+            if (IsValidWallPlane(plane))
+                n++;
+        }
+        return n;
     }
 
     bool TryGetTapPosition(out Vector2 screenPos)
@@ -109,99 +140,124 @@ public class ARWallPlacement : MonoBehaviour
         return false;
     }
 
-    bool TryGetVerticalPose(Vector2 screenPos, out Pose pose, out ARPlane plane)
+    bool IsValidWallPlane(ARPlane plane)
     {
-        if (raycastManager == null)
-        {
-            pose = default;
-            plane = null;
+        if (plane == null || plane.trackingState != TrackingState.Tracking)
             return false;
-        }
 
-        if (raycastManager.Raycast(screenPos, hits, TrackableType.PlaneWithinPolygon))
+        if (plane.alignment != PlaneAlignment.Vertical)
+            return false;
+
+        if (Mathf.Abs(plane.normal.y) > maxWallNormalY)
+            return false;
+
+        if (!IsPlaneUprightEnough(plane))
+            return false;
+
+        if (plane.size.x * plane.size.y < minPlaneArea)
+            return false;
+
+        if (_planeFilter != null && !_planeFilter.IsWallPlane(plane))
+            return false;
+
+        return true;
+    }
+
+    bool IsPlaneUprightEnough(ARPlane plane)
+    {
+        Vector3 flatNormal = new Vector3(plane.normal.x, 0f, plane.normal.z);
+        if (flatNormal.sqrMagnitude < 0.0001f)
+            return false;
+
+        float tilt = Vector3.Angle(plane.normal, flatNormal.normalized);
+        return tilt <= maxPlaneTiltDegrees;
+    }
+
+    bool TryGetBestVerticalWall(Vector2 screenPos, out Pose pose, out ARPlane plane)
+    {
+        pose = default;
+        plane = null;
+
+        if (raycastManager == null)
+            return false;
+
+        if (!raycastManager.Raycast(screenPos, _hits, TrackableType.PlaneWithinPolygon))
+            return false;
+
+        ARPlane bestPlane = null;
+        Vector3 bestHitPoint = default;
+        float bestScore = 0f;
+
+        for (int i = 0; i < _hits.Count; i++)
         {
-            for (int i = 0; i < hits.Count; i++)
+            ARPlane hitPlane = _hits[i].trackable as ARPlane;
+            if (!IsValidWallPlane(hitPlane))
+                continue;
+
+            float area = hitPlane.size.x * hitPlane.size.y;
+            float distToCenter = Vector2.Distance(screenPos, new Vector2(Screen.width * 0.5f, Screen.height * 0.5f));
+            float score = area - distToCenter * 0.001f;
+
+            if (score > bestScore)
             {
-                ARPlane hitPlane = hits[i].trackable as ARPlane;
-
-                if (hitPlane == null)
-                    continue;
-
-                if (hitPlane.alignment != PlaneAlignment.Vertical)
-                    continue;
-
-                if (hitPlane.trackingState != TrackingState.Tracking)
-                    continue;
-
-                float planeArea = hitPlane.size.x * hitPlane.size.y;
-                if (planeArea < minPlaneArea)
-                    continue;
-
-                pose = hits[i].pose;
-                plane = hitPlane;
-                return true;
+                bestScore = score;
+                bestPlane = hitPlane;
+                bestHitPoint = _hits[i].pose.position;
             }
         }
 
-        pose = default;
-        plane = null;
-        return false;
+        if (bestPlane == null)
+            return false;
+
+        plane = bestPlane;
+        pose = BuildWallPose(bestHitPoint, bestPlane);
+        return true;
+    }
+
+    Pose BuildWallPose(Vector3 surfacePoint, ARPlane wallPlane)
+    {
+        Quaternion rotation = ComputeWallAlignedRotation(surfacePoint, wallPlane);
+        Vector3 offset = rotation * Vector3.forward * wallOffsetFromPlane;
+        return new Pose(surfacePoint + offset, rotation);
     }
 
     void PlaceWall(Vector2 tapPos)
     {
         if (wallPrefab == null)
         {
-            Debug.LogError("wallPrefab is not assigned in the Inspector!");
+            Debug.LogError("[ARWall] wallPrefab not assigned.");
             return;
         }
 
         if (Time.time - _lastPlaceTime < placementCooldown)
         {
-            Debug.Log("[ARWall] Placement ignored — wait for cooldown (avoid cancelling video download).");
+            Debug.Log("[ARWall] Cooldown — wait before placing again.");
             return;
         }
 
         if (!AddressablesInitializer.IsReady)
         {
-            if (instructionText != null)
-                instructionText.text = "Loading content... wait a moment";
-            Debug.LogWarning("[ARWall] Addressables not ready yet — wait for [ADDR] Initialised OK in log.");
+            SetInstruction("Loading videos...\nPlease wait a few seconds");
             return;
         }
 
-        if (!TryGetVerticalPose(tapPos, out Pose tapPose, out ARPlane tapPlane))
+        if (!TryGetBestVerticalWall(tapPos, out Pose wallPose, out ARPlane tapPlane))
         {
-            if (instructionText != null)
-                instructionText.text = "Tap directly on detected wall";
-
+            SetInstruction("Couldn't find a wall there.\nTry tapping the plain wall area");
             return;
         }
 
-        // Use ARKit/ARCore plane pose for stable alignment; flip 180° if facing away from camera.
-        Quaternion targetRotation = tapPose.rotation;
-        if (Camera.main != null)
-        {
-            Vector3 toCamera = (Camera.main.transform.position - tapPose.position).normalized;
-            if (Vector3.Dot(targetRotation * Vector3.forward, toCamera) < 0f)
-                targetRotation *= Quaternion.Euler(0f, 180f, 0f);
-        }
-
-        Vector3 offsetDirection = targetRotation * Vector3.forward;
-        Vector3 targetPosition = tapPose.position + offsetDirection * wallOffsetFromPlane;
         _lastPlaceTime = Time.time;
 
-        Vector3 euler = targetRotation.eulerAngles;
-        Debug.Log(
-            "Wall placement rotation => quaternion: " + targetRotation +
-            " | euler: " + euler +
-            " | plane normal: " + tapPlane.normal);
+        Quaternion rotation = wallPose.rotation;
+        Vector3 surfacePoint = wallPose.position - rotation * Vector3.forward * wallOffsetFromPlane;
+        Pose anchorPose = new Pose(surfacePoint, rotation);
+
+        Debug.Log($"[ARWall] Place area={tapPlane.size.x:F2}x{tapPlane.size.y:F2} normal={tapPlane.normal} tiltOk");
 
         if (placedWallInstance != null && !allowReposition)
         {
-            if (instructionText != null)
-                instructionText.text = "Wall already placed";
-
+            SetInstruction("Video already placed");
             return;
         }
 
@@ -215,23 +271,24 @@ public class ARWallPlacement : MonoBehaviour
 
         if (anchorManager != null)
         {
-            ARAnchor anchor = anchorManager.AttachAnchor(tapPlane, tapPose);
+            placedAnchor = anchorManager.AttachAnchor(tapPlane, anchorPose);
+            Transform parent = placedAnchor != null ? placedAnchor.transform : null;
+            placedWallInstance = parent != null
+                ? Instantiate(wallPrefab, parent)
+                : Instantiate(wallPrefab, wallPose.position, wallPose.rotation);
 
-            if (anchor != null)
+            if (parent != null)
             {
-                placedAnchor = anchor;
-                placedWallInstance = Instantiate(wallPrefab, targetPosition, targetRotation, anchor.transform);
-            }
-            else
-            {
-                placedAnchor = null;
-                placedWallInstance = Instantiate(wallPrefab, targetPosition, targetRotation);
+                placedWallInstance.transform.localRotation = Quaternion.identity;
+                var lockRot = placedWallInstance.GetComponent<ARWallLockRotation>();
+                if (lockRot == null)
+                    lockRot = placedWallInstance.AddComponent<ARWallLockRotation>();
+                lockRot.Init(rotation, Vector3.forward * wallOffsetFromPlane);
             }
         }
         else
         {
-            placedAnchor = null;
-            placedWallInstance = Instantiate(wallPrefab, targetPosition, targetRotation);
+            placedWallInstance = Instantiate(wallPrefab, wallPose.position, wallPose.rotation);
         }
 
         ActiveVideoController = placedWallInstance.GetComponentInChildren<VideoPlayerController>();
@@ -245,28 +302,46 @@ public class ARWallPlacement : MonoBehaviour
         if (quadPreview != null)
             quadPreview.SetActive(false);
 
-        if (instructionText != null)
-            instructionText.text = "Wall placed! Tap another wall to move";
+        if (hidePlaneMeshesAfterPlace)
+            SetPlaneMeshesVisible(false);
+
+        SetInstruction("Loading video...\nPlease wait — don't tap again");
+    }
+
+    void SetPlaneMeshesVisible(bool visible)
+    {
+        if (planeManager == null)
+            return;
+
+        foreach (ARPlane plane in planeManager.trackables)
+        {
+            if (plane != null)
+                plane.gameObject.SetActive(visible);
+        }
     }
 
     Quaternion ComputeWallAlignedRotation(Vector3 hitPosition, ARPlane plane)
     {
-        if (plane == null)
-            return Quaternion.identity;
+        // AR Foundation: vertical plane normal = transform.up
+        Vector3 normal = plane.transform.up.normalized;
 
-        Vector3 wallNormal = plane.normal.normalized;
-        Vector3 flatNormal = Vector3.ProjectOnPlane(wallNormal, Vector3.up);
-
-        if (flatNormal.sqrMagnitude > 0.0001f)
-            wallNormal = flatNormal.normalized;
+        Vector3 flat = new Vector3(normal.x, 0f, normal.z);
+        if (flat.sqrMagnitude > 0.0001f)
+            normal = flat.normalized;
 
         if (Camera.main != null)
         {
             Vector3 toCamera = (Camera.main.transform.position - hitPosition).normalized;
-            if (Vector3.Dot(wallNormal, toCamera) < 0f)
-                wallNormal = -wallNormal;
+            if (Vector3.Dot(normal, toCamera) < 0f)
+                normal = -normal;
         }
 
-        return Quaternion.LookRotation(wallNormal, Vector3.up);
+        return Quaternion.LookRotation(normal, Vector3.up);
+    }
+
+    void SetInstruction(string msg)
+    {
+        if (instructionText != null)
+            instructionText.text = msg;
     }
 }
