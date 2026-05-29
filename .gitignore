@@ -105,3 +105,18 @@ InitTestScene*.unity*
 
 # Auto-generated scenes by play mode tests
 /[Aa]ssets/[Ii]nit[Tt]est[Ss]cene*.unity*
+
+# Documentation & Markdown files — exclude from version control
+*.md
+!README.md
+
+# Firebase & Deployment
+firebase.json
+.firebase/
+.firebaserc
+public/
+
+# Node.js & npm
+node_modules/
+package-lock.json
+yarn.lock
