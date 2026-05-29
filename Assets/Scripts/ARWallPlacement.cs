@@ -11,6 +11,8 @@ public class ARWallPlacement : MonoBehaviour
     public ARAnchorManager anchorManager;
 
     public GameObject wallPrefab;
+    [Tooltip("Optional — syncs video switcher index when wall is placed.")]
+    public RemoteVideoSwitcher videoSwitcher;
 
     // Assign a Quad GameObject in the Inspector to act as placement preview
     public GameObject quadPreview;
@@ -21,6 +23,10 @@ public class ARWallPlacement : MonoBehaviour
     [SerializeField] float previewRotationLerp = 12f;
     [SerializeField] float wallOffsetFromPlane = 0.015f;
     [SerializeField] bool allowReposition = true;
+    [Tooltip("Minimum seconds between placements — stops accidental multi-tap cancelling video download.")]
+    [SerializeField] float placementCooldown = 3f;
+    [Tooltip("Minimum detected wall area (m²) before allowing placement.")]
+    [SerializeField] float minPlaneArea = 0.25f;
 
     List<ARRaycastHit> hits =
         new List<ARRaycastHit>();
@@ -30,6 +36,10 @@ public class ARWallPlacement : MonoBehaviour
     ARPlane lastValidPlane;
     GameObject placedWallInstance;
     ARAnchor placedAnchor;
+    float _lastPlaceTime = -10f;
+
+    /// <summary>Video controller on the currently placed wall, if any.</summary>
+    public VideoPlayerController ActiveVideoController { get; private set; }
 
     void Start()
     {
@@ -123,6 +133,10 @@ public class ARWallPlacement : MonoBehaviour
                 if (hitPlane.trackingState != TrackingState.Tracking)
                     continue;
 
+                float planeArea = hitPlane.size.x * hitPlane.size.y;
+                if (planeArea < minPlaneArea)
+                    continue;
+
                 pose = hits[i].pose;
                 plane = hitPlane;
                 return true;
@@ -142,6 +156,20 @@ public class ARWallPlacement : MonoBehaviour
             return;
         }
 
+        if (Time.time - _lastPlaceTime < placementCooldown)
+        {
+            Debug.Log("[ARWall] Placement ignored — wait for cooldown (avoid cancelling video download).");
+            return;
+        }
+
+        if (!AddressablesInitializer.IsReady)
+        {
+            if (instructionText != null)
+                instructionText.text = "Loading content... wait a moment";
+            Debug.LogWarning("[ARWall] Addressables not ready yet — wait for [ADDR] Initialised OK in log.");
+            return;
+        }
+
         if (!TryGetVerticalPose(tapPos, out Pose tapPose, out ARPlane tapPlane))
         {
             if (instructionText != null)
@@ -150,9 +178,18 @@ public class ARWallPlacement : MonoBehaviour
             return;
         }
 
-        Quaternion targetRotation = ComputeWallAlignedRotation(tapPose.position, tapPlane);
+        // Use ARKit/ARCore plane pose for stable alignment; flip 180° if facing away from camera.
+        Quaternion targetRotation = tapPose.rotation;
+        if (Camera.main != null)
+        {
+            Vector3 toCamera = (Camera.main.transform.position - tapPose.position).normalized;
+            if (Vector3.Dot(targetRotation * Vector3.forward, toCamera) < 0f)
+                targetRotation *= Quaternion.Euler(0f, 180f, 0f);
+        }
+
         Vector3 offsetDirection = targetRotation * Vector3.forward;
         Vector3 targetPosition = tapPose.position + offsetDirection * wallOffsetFromPlane;
+        _lastPlaceTime = Time.time;
 
         Vector3 euler = targetRotation.eulerAngles;
         Debug.Log(
@@ -170,6 +207,8 @@ public class ARWallPlacement : MonoBehaviour
 
         if (placedWallInstance != null)
             Destroy(placedWallInstance);
+
+        ActiveVideoController = null;
 
         if (placedAnchor != null)
             Destroy(placedAnchor.gameObject);
@@ -195,10 +234,13 @@ public class ARWallPlacement : MonoBehaviour
             placedWallInstance = Instantiate(wallPrefab, targetPosition, targetRotation);
         }
 
-        // Start video playback on placed wall
-        VideoPlayerController vpc = placedWallInstance.GetComponentInChildren<VideoPlayerController>();
-        if (vpc != null)
-            vpc.Play();
+        ActiveVideoController = placedWallInstance.GetComponentInChildren<VideoPlayerController>();
+
+        if (videoSwitcher == null)
+            videoSwitcher = FindObjectOfType<RemoteVideoSwitcher>();
+
+        if (videoSwitcher != null && ActiveVideoController != null)
+            videoSwitcher.OnWallPlaced(ActiveVideoController);
 
         if (quadPreview != null)
             quadPreview.SetActive(false);

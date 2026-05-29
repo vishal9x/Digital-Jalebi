@@ -16,7 +16,17 @@ MonoBehaviour:
   m_Data:
     m_SerializedData: []
   m_GUID: 0eb5871e2a9fb8544ba8545468aac94f
-  m_SerializeEntries: []
+  m_SerializeEntries:
+  - m_GUID: d3008bd9f754b804a94751f63caa90df
+    m_Address: Assets/Videos/Video2.webm
+    m_ReadOnly: 0
+    m_SerializedLabels: []
+    FlaggedDuringContentUpdateRestriction: 0
+  - m_GUID: e0f8a600d5b01274fb9802fb076e684c
+    m_Address: Assets/Videos/Tab 2 3-2 Earthquake.webm
+    m_ReadOnly: 0
+    m_SerializedLabels: []
+    FlaggedDuringContentUpdateRestriction: 0
   m_ReadOnly: 0
   m_Settings: {fileID: 11400000, guid: e878c0dd00a503f4db5e08ca052559ed, type: 2}
   m_SchemaSet:

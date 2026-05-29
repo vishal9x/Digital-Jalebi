@@ -48,6 +48,16 @@ public class VideoPlayerController : MonoBehaviour
     bool _preparing = false;
     AsyncOperationHandle<VideoClip> _addressableHandle;
     bool _handleValid = false;
+    Coroutine _loadCoroutine;
+
+    bool UsesAddressableSource =>
+        addressableVideo != null && addressableVideo.RuntimeKeyIsValid();
+
+    /// <summary>GUID of the default Addressable on the prefab (for video switcher sync).</summary>
+    public string InitialAddressableGuid =>
+        addressableVideo != null && addressableVideo.RuntimeKeyIsValid()
+            ? addressableVideo.AssetGUID
+            : string.Empty;
 
     void Awake()
     {
@@ -153,15 +163,23 @@ public class VideoPlayerController : MonoBehaviour
 
     void OnEnable()
     {
-        // Auto-play when the wall prefab becomes active (placed in AR scene)
-        if (addressableVideo != null && addressableVideo.RuntimeKeyIsValid())
-            StartCoroutine(LoadAddressableAndPlay());
+        if (_loadCoroutine != null)
+            StopCoroutine(_loadCoroutine);
+
+        if (UsesAddressableSource)
+            _loadCoroutine = StartCoroutine(LoadAddressableAndPlay());
         else
-            StartCoroutine(PrepareAndPlay());
+            _loadCoroutine = StartCoroutine(PrepareAndPlay());
     }
 
     void OnDisable()
     {
+        if (_loadCoroutine != null)
+        {
+            StopCoroutine(_loadCoroutine);
+            _loadCoroutine = null;
+        }
+
         _videoPlayer.Stop();
         _prepared = false;
         _preparing = false;
@@ -172,26 +190,43 @@ public class VideoPlayerController : MonoBehaviour
     // VideoPlayer, then hands off to the normal PrepareAndPlay() flow.
     IEnumerator LoadAddressableAndPlay()
     {
+        // Wait until AddressablesInitializer finishes (init crash was blocking all loads).
+        float waitStart = Time.realtimeSinceStartup;
+        const float maxWaitForInit = 60f;
+        while (!AddressablesInitializer.IsReady)
+        {
+            if (Time.realtimeSinceStartup - waitStart > maxWaitForInit)
+            {
+                Debug.LogError("[VPC] Timed out waiting for AddressablesInitializer.IsReady", this);
+                yield break;
+            }
+            yield return null;
+        }
+
+        float loadStart = Time.realtimeSinceStartup;
         Debug.Log($"[VPC] Addressables: starting async load. key={addressableVideo.AssetGUID}");
 
         _addressableHandle = addressableVideo.LoadAssetAsync<VideoClip>();
         _handleValid = true;
 
-        // Wait for the download + load to complete
         yield return _addressableHandle;
+
+        float loadSeconds = Time.realtimeSinceStartup - loadStart;
 
         if (_addressableHandle.Status == AsyncOperationStatus.Succeeded)
         {
             VideoClip clip = _addressableHandle.Result;
             _videoPlayer.source = VideoSource.VideoClip;
             _videoPlayer.clip = clip;
-            Debug.Log($"[VPC] Addressables: loaded '{clip.name}' ({clip.width}x{clip.height}, {clip.frameCount} frames)");
+            Debug.Log($"[VPC] Addressables: loaded '{clip.name}' in {loadSeconds:F1}s ({clip.width}x{clip.height})");
             yield return StartCoroutine(PrepareAndPlay());
         }
         else
         {
-            Debug.LogError($"[VPC] Addressables: load FAILED — {_addressableHandle.OperationException}", this);
+            Debug.LogError($"[VPC] Addressables: load FAILED after {loadSeconds:F1}s — {_addressableHandle.OperationException}", this);
         }
+
+        _loadCoroutine = null;
     }
 
     void ReleaseAddressableHandle()
@@ -206,7 +241,14 @@ public class VideoPlayerController : MonoBehaviour
 
     IEnumerator PrepareAndPlay()
     {
-        Debug.Log($"[VPC] PrepareAndPlay called. prepared={_prepared} preparing={_preparing} url='{_videoPlayer.url}'");
+        bool hasSource = _videoPlayer.clip != null || !string.IsNullOrEmpty(_videoPlayer.url);
+        if (!hasSource)
+        {
+            Debug.LogWarning("[VPC] PrepareAndPlay skipped — waiting for video source (Addressable still downloading?).");
+            yield break;
+        }
+
+        Debug.Log($"[VPC] PrepareAndPlay. clip={(_videoPlayer.clip != null ? _videoPlayer.clip.name : "null")} url='{_videoPlayer.url}'");
 
         if (_prepared)
         {
@@ -215,7 +257,6 @@ public class VideoPlayerController : MonoBehaviour
             yield break;
         }
 
-        // Prevent two coroutines preparing simultaneously
         if (_preparing)
         {
             Debug.Log("[VPC] Already preparing — skipping duplicate call.");
@@ -226,7 +267,7 @@ public class VideoPlayerController : MonoBehaviour
         _videoPlayer.Prepare();
         Debug.Log("[VPC] Prepare() called — waiting...");
 
-        float timeout = 10f;
+        float timeout = UsesAddressableSource ? 30f : 10f;
         float elapsed = 0f;
         while (!_prepared && elapsed < timeout)
         {
@@ -243,8 +284,10 @@ public class VideoPlayerController : MonoBehaviour
         }
         else
         {
-            Debug.LogError($"[VPC] Video NOT prepared after {timeout}s timeout. url='{_videoPlayer.url}'", this);
+            Debug.LogError($"[VPC] Video NOT prepared after {timeout}s. clip={(_videoPlayer.clip != null ? _videoPlayer.clip.name : "null")}", this);
         }
+
+        _loadCoroutine = null;
     }
 
     void OnPrepareCompleted(VideoPlayer vp)
@@ -299,12 +342,94 @@ public class VideoPlayerController : MonoBehaviour
 
     // --- Public API ---
 
-    public void Play() => StartCoroutine(PrepareAndPlay());
+    /// <summary>No-op for Addressables — OnEnable runs LoadAddressableAndPlay.</summary>
+    public void Play()
+    {
+        if (UsesAddressableSource)
+            return;
+
+        if (_loadCoroutine == null)
+            _loadCoroutine = StartCoroutine(PrepareAndPlay());
+    }
     public void Pause() => _videoPlayer.Pause();
+
     public void Stop()
     {
         _videoPlayer.Stop();
         _prepared = false;
+        _preparing = false;
+    }
+
+    /// <summary>
+    /// Loads a different remote Addressable video at runtime (video switching requirement).
+    /// </summary>
+    public void SwitchToAddressable(AssetReferenceT<VideoClip> newReference)
+    {
+        if (newReference == null || !newReference.RuntimeKeyIsValid())
+        {
+            Debug.LogWarning("[VPC] SwitchToAddressable: invalid AssetReference.", this);
+            return;
+        }
+
+        if (addressableVideo != null && addressableVideo.AssetGUID == newReference.AssetGUID && _videoPlayer.isPlaying)
+        {
+            Debug.Log($"[VPC] Already playing GUID {newReference.AssetGUID} — skip switch.");
+            return;
+        }
+
+        if (_loadCoroutine != null)
+            StopCoroutine(_loadCoroutine);
+
+        _loadCoroutine = StartCoroutine(SwitchToAddressableCoroutine(newReference));
+    }
+
+    IEnumerator SwitchToAddressableCoroutine(AssetReferenceT<VideoClip> newReference)
+    {
+        Debug.Log($"[VPC] Switch start → GUID {newReference.AssetGUID}");
+
+        _videoPlayer.Stop();
+        _prepared = false;
+        _preparing = false;
+        ReleaseAddressableHandle();
+
+        yield return null;
+
+        float waitStart = Time.realtimeSinceStartup;
+        while (!AddressablesInitializer.IsReady)
+        {
+            if (Time.realtimeSinceStartup - waitStart > 60f)
+            {
+                Debug.LogError("[VPC] Switch aborted — Addressables not ready.", this);
+                yield break;
+            }
+            yield return null;
+        }
+
+        float loadStart = Time.realtimeSinceStartup;
+        _addressableHandle = newReference.LoadAssetAsync<VideoClip>();
+        _handleValid = true;
+        yield return _addressableHandle;
+
+        float loadSeconds = Time.realtimeSinceStartup - loadStart;
+
+        if (_addressableHandle.Status != AsyncOperationStatus.Succeeded)
+        {
+            Debug.LogError($"[VPC] Switch load FAILED in {loadSeconds:F1}s — {_addressableHandle.OperationException}", this);
+            _loadCoroutine = null;
+            yield break;
+        }
+
+        VideoClip clip = _addressableHandle.Result;
+        addressableVideo = newReference;
+
+        _videoPlayer.source = VideoSource.VideoClip;
+        _videoPlayer.url = string.Empty;
+        _videoPlayer.clip = clip;
+
+        Debug.Log($"[VPC] Switch loaded '{clip.name}' in {loadSeconds:F1}s — preparing...");
+
+        yield return PrepareAndPlay();
+        _loadCoroutine = null;
     }
 
     public bool IsPlaying => _videoPlayer != null && _videoPlayer.isPlaying;
