@@ -80,6 +80,7 @@ mono_crash.*
 *.unitypackage
 *.unitypackage.meta
 *.app
+*.bundle
 
 # Crashlytics generated file
 crashlytics-build.properties
